@@ -1,0 +1,24 @@
+# Ignore compiled binaries
+*.exe
+*.out
+*.app
+
+# Ignore environment files
+.env
+config.yaml
+config.json
+
+# Ignore dependencies
+vendor/
+
+# Ignore logs
+*.log
+debug.log
+
+# Ignore IDE files
+.vscode/
+.idea/
+*.iml
+
+# Ignore Go modules (optional)
+go.sum
