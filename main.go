@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"my-backend/utils"
 	"net/http"
 	"os"
+
+	"github.com/joho/godotenv"
 
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v4"
@@ -53,34 +57,48 @@ func createProduct(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	err := godotenv.Load(".env")
+	if err != nil {
+		log.Fatalf("Error loading .env file: %v", err)
+	}
+
 	dbUser := os.Getenv("USER")
 	dbHost := os.Getenv("HOST")
 	dbPort := os.Getenv("DB_PORT")
 	database := os.Getenv("DATABASE")
+	database_password := os.Getenv("DB_PASSWORD")
 
-	conn, err := pgx.Connect(context.Background(), "postgres://user:hadeed#12896@localhost:5432/dbname")
+	connString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s",
+		dbUser,
+		database_password,
+		dbHost,
+		dbPort,
+		database,
+	)
+
+	conn, err := pgx.Connect(context.Background(), connString)
 	if err != nil {
-		fmt.Printf("Unable to connect to database: %v\n", err)
+		fmt.Printf("Unable to connect to the database: %v\n", err)
 		return
 	}
 	defer conn.Close(context.Background())
 
-	var greeting string
-	err = conn.QueryRow(context.Background(), "select 'Hello, world!'").Scan(&greeting)
+	posts, err := utils.GetChapters(context.Background(), conn)
+
 	if err != nil {
-		fmt.Printf("QueryRow failed: %v\n", err)
+		fmt.Printf("Something went wrong fetching posts: %v\n", err)
 		return
 	}
 
-	fmt.Println(greeting)
-
 	w.Header().Set("Content-Type", "application/json")
 
-	json.NewEncoder(w).Encode(product)
+	json.NewEncoder(w).Encode(posts)
 
 }
 
 func main() {
+
 	r := mux.NewRouter()
 	r.HandleFunc("/", helloHandler)
 	r.HandleFunc("/user/{name}", nameHandler)
