@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"my-backend/controller"
+	"my-backend/middlewares"
 	"my-backend/utils"
 	"net/http"
 	"os"
@@ -98,16 +100,20 @@ func createProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-
 	r := mux.NewRouter()
+	os.MkdirAll("./uploads", os.ModePerm)
+
+	loggedMux := middlewares.LoggingMiddleware(r)
 	r.HandleFunc("/", helloHandler)
+	r.HandleFunc("/upload", utils.UploadFile).Methods("POST")
 	r.HandleFunc("/user/{name}", nameHandler)
 
 	r.HandleFunc("/create-user", createUser).Methods("POST")
 	r.HandleFunc("/create-product", createProduct).Methods("POST")
+	r.HandleFunc("/register-user", controller.RegisterUser).Methods("POST")
 
 	fmt.Println("Server is running on http://localhost:8080")
-	if err := http.ListenAndServe(":8080", r); err != nil {
+	if err := http.ListenAndServe(":8080", loggedMux); err != nil {
 		fmt.Printf("Error starting server: %v\n", err)
 	}
 }
