@@ -2,118 +2,111 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
+	"my-backend/config"
 	"my-backend/controller"
+	"my-backend/db"
 	"my-backend/middlewares"
-	"my-backend/utils"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/joho/godotenv"
-
-	"github.com/gorilla/mux"
-	"github.com/jackc/pgx/v4"
+	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
-func helloHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, "Hello, World!")
-}
-func nameHandler(w http.ResponseWriter, r *http.Request) {
-	age := r.URL.Query().Get("age")
-	vars := mux.Vars(r)
-	name := vars["name"]
-	fmt.Fprintf(w, "User name: %s and age is %s", name, age)
-}
-
-type User struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
-func createUser(w http.ResponseWriter, r *http.Request) {
-	var user User
-
-	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	json.NewEncoder(w).Encode(user)
-
-}
-
-type Product struct {
-	Name     string `json:"name"`
-	Category string `json:"category"`
-	Price    int    `json:"price"`
-}
-
-func createProduct(w http.ResponseWriter, r *http.Request) {
-	var product Product
-
-	if err := json.NewDecoder(r.Body).Decode(&product); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	err := godotenv.Load(".env")
-	if err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
-	}
-
-	dbUser := os.Getenv("USER")
-	dbHost := os.Getenv("HOST")
-	dbPort := os.Getenv("DB_PORT")
-	database := os.Getenv("DATABASE")
-	database_password := os.Getenv("DB_PASSWORD")
-
-	connString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s",
-		dbUser,
-		database_password,
-		dbHost,
-		dbPort,
-		database,
-	)
-
-	conn, err := pgx.Connect(context.Background(), connString)
-	if err != nil {
-		fmt.Printf("Unable to connect to the database: %v\n", err)
-		return
-	}
-	defer conn.Close(context.Background())
-
-	posts, err := utils.GetChapters(context.Background(), conn)
-
-	if err != nil {
-		fmt.Printf("Something went wrong fetching posts: %v\n", err)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	json.NewEncoder(w).Encode(posts)
-
-}
-
 func main() {
-	r := mux.NewRouter()
-	os.MkdirAll("./uploads", os.ModePerm)
 
-	loggedMux := middlewares.LoggingMiddleware(r)
-	r.HandleFunc("/", helloHandler)
-	r.HandleFunc("/upload", utils.UploadFile).Methods("POST")
-	r.HandleFunc("/user/{name}", nameHandler)
-
-	r.HandleFunc("/create-user", createUser).Methods("POST")
-	r.HandleFunc("/create-product", createProduct).Methods("POST")
-	r.HandleFunc("/register-user", controller.RegisterUser).Methods("POST")
-
-	fmt.Println("Server is running on http://localhost:8080")
-	if err := http.ListenAndServe(":8080", loggedMux); err != nil {
-		fmt.Printf("Error starting server: %v\n", err)
+	env, err := config.LoadConfig()
+	if err != nil {
+		log.Fatal("Error loading envs:", err)
 	}
+
+	client, err := db.ConnectToDb(env.DBURI)
+	if err != nil {
+		log.Fatal("Error connecting to MongoDB:", err)
+	}
+	router := gin.Default()
+
+	router.Use(func(c *gin.Context) {
+		c.Set("mongoClient", client)
+		c.Next()
+	})
+
+	router.Use(middlewares.LoggingMiddleware())
+
+	router.GET("/", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"message": "Hello, World!",
+		})
+	})
+	router.GET("/users", func(c *gin.Context) {
+		type User struct {
+			ID    string `json:"id" bson:"_id,omitempty"`
+			Name  string `json:"name" bson:"name"`
+			Email string `json:"email" bson:"email"`
+		}
+
+		client, exists := c.Get("mongoClient")
+
+		if !exists {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection not found"})
+			return
+		}
+
+		mongoClient, ok := client.(*mongo.Client)
+
+		if !ok {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid database connection"})
+			return
+		}
+
+		collection := mongoClient.Database("courseGarden").Collection("users")
+
+		cursor, err := collection.Find(context.TODO(), bson.M{})
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Can't find collection"})
+			return
+		}
+
+		defer cursor.Close(context.TODO())
+
+		var users []User
+
+		for cursor.Next(context.TODO()) {
+			var user User
+			if err := cursor.Decode(&user); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Collections are not correct"})
+				return
+			}
+			users = append(users, user)
+		}
+
+		c.JSON(200, gin.H{"message": "MongoDB connection works!", "collection": collection.Name(), "users": users})
+	})
+
+	router.POST("/auth/register", controller.RegisterUser)
+
+	go func() {
+		if err := router.Run(":3000"); err != nil {
+			log.Fatal("Server failed to start:", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
+	<-quit
+
+	fmt.Println("Shutting down server...")
+
+	// Release resources
+	db.DisconnectMongoDB()
+	fmt.Println("Server gracefully stopped.")
+
 }
